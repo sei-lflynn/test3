@@ -103,22 +103,21 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p "${BW_OUT}"
-          # Build Wrapper must see a SUCCESSFUL compile to emit compile_commands.json
+
+          # Flags that relax the wrapped build so it always succeeds.
+          RELAXED_FLAGS="-Wno-error"                                   # blanket cancel
+          # Or if you prefer to keep -Werror globally but whitelist specific warnings, use:
+          # RELAXED_FLAGS="-Wno-error=format-security -Wno-error=implicit-function-declaration"
+
           build-wrapper-linux-x86-64 --out-dir "${BW_OUT}" \
-            sh -c 'gcc -std=c17 -I. -g \
+            sh -c "gcc -std=c17 -I. -g \
               -D_FORTIFY_SOURCE=3 -O2 -fstack-protector-strong -fPIE -pie \
               -Wl,-z,relro,-z,now \
-              -Wall -Wextra -Wformat=2 -Werror=format-security \
+              -Wall -Wextra -Wformat=2 -Wformat-security \
               -Wconversion -Wshadow -Wduplicated-cond -Wlogical-op -Wnull-dereference \
               -fno-common \
               main.c -o main \
-              '"$(printf '%s' \
-                # ↓↓↓ allow the build to SUCCEED even if vulnerabilities are present
-                ' -Wno-error=format-security' \
-                ' -Wno-error=implicit-function-declaration' \
-                # or just drop -Werror entirely in the wrapped build:
-                # ' -Wno-error'
-              )"
+              ${RELAXED_FLAGS}"
 
 
 
