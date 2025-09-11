@@ -32,15 +32,17 @@ on:
   push:
     branches: [ "main" ]
     # Trigger only when C sources, the workflow, or Sonar properties change
-    # paths:
-    #  - '**/*.c'
-    #  - 'sonar-project.properties'
-    #  - '.github/workflows/sonarcloud.yml'
+    paths:
+      - '**/*.c'
+      - '**/*.h'
+      - 'sonar-project.properties'
+      - '.github/workflows/sonarcloud.yml'
   pull_request:
     branches: [ "main" ]
     types: [opened, synchronize, reopened]
     # paths:
     #  - '**/*.c'
+    #  - '**/*.h'
     #  - 'sonar-project.properties'
     #  - '.github/workflows/sonarcloud.yml'
   # workflow_dispatch:
@@ -88,6 +90,7 @@ jobs:
         with:
           fetch-depth: 0              # Full history improves blame/issue precision
           persist-credentials: false  # Do not leave a token in .git/config
+          submodules: false           # Avoid implicit submodule fetch/exec
 
       # Install Sonar's Build Wrapper (wraps compiler and emits compile_commands.json)
       - name: Install Build Wrapper
@@ -102,8 +105,25 @@ jobs:
           mkdir -p "${BW_OUT}"
           # Build Wrapper captures the compile so the analyzer knows exactly how files were built
           build-wrapper-linux-x86-64 --out-dir "${BW_OUT}" \
-            sh -c 'gcc -std=c17 -I. -O2 -g main.c -o main'
+            sh -c 'gcc -std=c17 -I. -g \
+              -D_FORTIFY_SOURCE=3 -O2 -fstack-protector-strong -fPIE -pie \
+              -Wl,-z,relro,-z,now \
+              -Werror -Wall -Wextra -Wformat=2 -Werror=format-security \
+              -Wconversion -Wshadow -Wduplicated-cond -Wlogical-op -Wnull-dereference \
+              -fno-common \
+              main.c -o main'
         timeout-minutes: 5
+
+      # Optional second compile variants purely to enrich static analysis signals (not executed)
+      # - GCC static analyzer (-fanalyzer) can flag lifetime/flow bugs at compile time
+      # - UBSan/ASan builds can surface diagnostics even without running the binary
+      - name: Secondary analysis-only builds (gcc -fanalyzer, ASan/UBSan)
+        run: |
+          set -euxo pipefail
+          gcc -std=c17 -I. -g -fanalyzer -c main.c -o /tmp/analyzer.o || true
+          gcc -std=c17 -I. -O1 -g -fsanitize=undefined,address -fno-omit-frame-pointer \
+              -Werror -Wall -Wextra -Wformat=2 -Werror=format-security \
+              main.c -o /tmp/main-asan || true
 
       # Fail fast if the wrapper didn't produce the expected file
       - name: Verify compile_commands.json exists
@@ -121,6 +141,10 @@ jobs:
         with:
           args: >
             --define sonar.cfamily.compile-commands=${{ env.BW_OUT }}/compile_commands.json
+            --define sonar.verbose=true
+            # --define sonar.scm.exclusions.disabled=false
+            # --define sonar.sourceEncoding=UTF-8
+            # --define sonar.ws.timeout=120
 
       # Convert SonarCloud issues → SARIF so GitHub Code Scanning can ingest them.
       # Why a custom step? SonarCloud doesn’t publish SARIF directly, so we fetch issues via API and transcode.
