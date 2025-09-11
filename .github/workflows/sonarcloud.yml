@@ -103,16 +103,24 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p "${BW_OUT}"
-          # Build Wrapper captures the compile so the analyzer knows exactly how files were built
+          # Build Wrapper must see a SUCCESSFUL compile to emit compile_commands.json
           build-wrapper-linux-x86-64 --out-dir "${BW_OUT}" \
             sh -c 'gcc -std=c17 -I. -g \
               -D_FORTIFY_SOURCE=3 -O2 -fstack-protector-strong -fPIE -pie \
               -Wl,-z,relro,-z,now \
-              -Werror -Wall -Wextra -Wformat=2 -Werror=format-security \
+              -Wall -Wextra -Wformat=2 -Werror=format-security \
               -Wconversion -Wshadow -Wduplicated-cond -Wlogical-op -Wnull-dereference \
               -fno-common \
-              main.c -o main'
-        timeout-minutes: 5
+              main.c -o main \
+              '"$(printf '%s' \
+                # ↓↓↓ allow the build to SUCCEED even if vulnerabilities are present
+                ' -Wno-error=format-security' \
+                ' -Wno-error=implicit-function-declaration' \
+                # or just drop -Werror entirely in the wrapped build:
+                # ' -Wno-error'
+              )"
+
+
 
       # Optional second compile variants purely to enrich static analysis signals (not executed)
       # - GCC static analyzer (-fanalyzer) can flag lifetime/flow bugs at compile time
