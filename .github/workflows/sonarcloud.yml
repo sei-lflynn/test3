@@ -149,9 +149,10 @@ jobs:
           args: >
             --define sonar.cfamily.compile-commands=${{ env.BW_OUT }}/compile_commands.json
             --define sonar.verbose=true
-            # --define sonar.scm.exclusions.disabled=false
-            # --define sonar.sourceEncoding=UTF-8
-            # --define sonar.ws.timeout=120
+
+      # --define sonar.scm.exclusions.disabled=false
+      # --define sonar.sourceEncoding=UTF-8
+      # --define sonar.ws.timeout=120
 
       # Convert SonarCloud issues → SARIF so GitHub Code Scanning can ingest them.
       # Why a custom step? SonarCloud doesn’t publish SARIF directly, so we fetch issues via API and transcode.
