@@ -2,7 +2,7 @@
 # =============================================================================
 # What this workflow does (high level):
 #   1) Checks out your code with read-only permissions and no persisted creds.
-#   2) Runs Codacy Analysis CLI (via pinned action) to generate SARIF results.
+#   2) Runs Codacy CLI v2 (pinned, no curl|bash piping) to generate SARIF results.
 #   3) Splits MULTI-run SARIF into SINGLE-run SARIF files (one per analyzer).
 #   4) Uploads each SINGLE-run SARIF to GitHub Code Scanning with a unique category.
 #   5) Stores the split SARIFs as a build artifact for auditing.
@@ -102,19 +102,54 @@ jobs:
           persist-credentials: false
           fetch-depth: 0                  # Full history (safe default, some tools use blame).
 
-      # Run Codacy Analysis CLI via pinned action.
-      # Keep the step green (continue-on-error + very high max-allowed-issues) so we ALWAYS upload SARIF.
-      - name: Run Codacy Analysis CLI
+      # ───── Codacy CLI v2: install (pinned), init, install tools, analyze → SARIF ─────
+      # Install Codacy CLI v2 from a PINNED release asset (no curl|bash piping)
+      - name: Install Codacy CLI v2 (pinned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="1.0.0-main.356.sha.ee1b0e6"   # <-- pin to a specific v2 tag
+          curl -fsSL -o /tmp/ccli.tgz \
+            "https://github.com/codacy/codacy-cli-v2/releases/download/${VER}/codacy-cli-v2_${VER}_linux_amd64.tar.gz"
+          sudo tar -xzf /tmp/ccli.tgz -C /usr/local/bin codacy-cli-v2
+          sudo mv /usr/local/bin/codacy-cli-v2 /usr/local/bin/codacy-cli
+          codacy-cli version
+
+      # Derive owner/repo from GITHUB_REPOSITORY for remote init (mirrors your Codacy repo settings).
+      - name: Resolve repository coordinates for Codacy
+        id: coords
+        shell: bash
+        run: |
+          set -euo pipefail
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY##*/}"
+          echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
+          echo "repo=${REPO}"   >> "$GITHUB_OUTPUT"
+
+      # Initialize configuration (REMOTE mode to mirror your Codacy repo settings),
+      # or switch to 'codacy-cli init' alone if you prefer fully local defaults.
+      - name: Codacy CLI v2 init (remote)
+        env:
+          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+        run: |
+          codacy-cli init \
+            --api-token "$CODACY_API_TOKEN" \
+            --provider gh \
+            --organization "${{ steps.coords.outputs.owner }}" \
+            --repository   "${{ steps.coords.outputs.repo }}"
+
+      # Install all toolchains/runtimes required by the generated .codacy/codacy.yaml
+      - name: Codacy CLI v2 install toolchains
+        run: codacy-cli install
+
+      # Run analysis and write SARIF where your later steps expect it
+      # Keep the step green so we ALWAYS upload SARIF; let GitHub enforce gates.
+      - name: Codacy CLI v2 analyze → SARIF
         continue-on-error: true           # Let GitHub enforce gates; ensures upload still runs.
-        uses: codacy/codacy-analysis-cli-action@562ee3e92b8e92df8b67e0a5ff8aa8e261919c08 # v4.4.7
-        with:
-          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}   # Optional: if you have a Codacy repo token.
-          verbose: true
-          format: sarif
-          output: ${{ env.SARIF_OUT }}
-          gh-code-scanning-compat: true
-          max-allowed-issues: 2147483647  # Keep CI green; Code Scanning handles gating.
-        # If you want to FAIL the job on findings: remove continue-on-error and lower max-allowed-issues.
+        env:
+          SARIF_OUT: ${{ env.SARIF_OUT }}
+        run: |
+          codacy-cli analyze --format sarif -o "${SARIF_OUT:-results.sarif}"
 
       # Split MULTI-run SARIF → many SINGLE-run SARIFs (one per analyzer) under ./reports.
       # Rationale: GitHub requires one run per upload+category (policy mid-2025).
