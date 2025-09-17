@@ -171,25 +171,47 @@ jobs:
           files = []
           with open(sarif, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+          schema = data.get("$schema", "https://json.schemastore.org/sarif-2.1.0.json")
+          version = data.get("version", "2.1.0")
           runs = data.get("runs", [])
+
+          def sanitize_run(run):
+            tool = run.get("tool") or {}
+            driver = tool.get("driver") or {}
+            # Coerce rules to array (SARIF requires array, not null)
+            if driver.get("rules") is None:
+              driver["rules"] = []
+            # Ensure results exists and is a list
+            if run.get("results") is None:
+              run["results"] = []
+            # Write back sanitized structures
+            tool["driver"] = driver
+            run["tool"] = tool
+            return run
+
+          count = 0
           for i, run in enumerate(runs, 1):
-            tool = ((run.get("tool") or {}).get("driver") or {})
+            run = sanitize_run(run)
+            # Optional: skip analyzers that produced no results
+            if not run.get("results"):
+              continue
+            tool = (run.get("tool", {}).get("driver", {}))
             name = tool.get("name") or f"run{i}"
             slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-").lower() or f"run{i}"
-            out = {
-              "version": data.get("version","2.1.0"),
-              "$schema": data.get("$schema","https://json.schemastore.org/sarif-2.1.0.json"),
-              "runs": [run]
-            }
+            out = {"version": version, "$schema": schema, "runs": [run]}
             path = outdir / f"codacy-{slug}.sarif"
             with open(path, "w", encoding="utf-8") as wf:
               json.dump(out, wf, ensure_ascii=False)
             files.append({"file": str(path), "category": f"codacy-{slug}"})
-          # Emit a single-line JSON array describing the split files.
+            count += 1
+
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as go:
             go.write("sarif_files=" + json.dumps(files) + "\n")
-          print(f"Split into {len(files)} file(s)")
+          print(f"Split into {count} single-run file(s); skipped {len(runs)-count} empty run(s).")
           PY
+
+
 
       # Archive the split SARIFs for auditing and for the next job to download.
       - name: Upload split SARIFs as artifact
